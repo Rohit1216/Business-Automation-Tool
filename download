@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Generated decks (but keep the bundled example files below)
+*_Filled_Deck.pptx
+Filled_Deck.pptx
+output/
+
+.vscode/
+.streamlit/secrets.toml
