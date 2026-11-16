@@ -73,6 +73,7 @@ def parse_excel(path):
         "recent_developments": [],
         "facts": {},             # Overview key facts: founded / headquarters / employees / ...
         "jobs": [],              # 'IT Job Hiring' sheet
+        "executives": [],        # [{'name', 'title', 'derived'}] for the Key Executives cards
     }
 
     section = None
@@ -94,10 +95,17 @@ def parse_excel(path):
             section = "triggers"
         elif a == "Peer Companies":
             section = "peers"
+        elif isinstance(a, str) and a.strip().lower() in _EXEC_SECTION_NAMES:
+            # optional 'Key Executives' block: Name | Title rows
+            section = "executives"
+            if b not in (None, ""):
+                _add_executive(data, a, b)
         elif section is None and isinstance(a, str) and b not in (None, "") \
                 and a.strip().lower() in _FACT_KEYS:
             # key facts above the first section (newer Overview sheets)
             data["facts"][_FACT_KEYS[a.strip().lower()]] = str(b).strip()
+        elif section == "executives" and isinstance(a, str) and a.strip():
+            _add_executive(data, a, b)
         elif section == "description" and a and b:
             # newer Overview sheets: 'Business Description' is a header row and
             # the text sits on the row(s) below it, under a label like 'Overview'
@@ -269,7 +277,145 @@ def parse_excel(path):
     if jb_ws:
         data["jobs"] = _parse_jobs(list(jb_ws.iter_rows(values_only=True)))
 
+    # Key Executives: an explicit 'Key Executives' sheet wins, then the
+    # Overview block above; with neither, the current leaders are read from the
+    # workbook's own leadership news (see _derive_executives).
+    for ws_name in wb.sheetnames:
+        if ws_name.strip().lower() in _EXEC_SECTION_NAMES:
+            for r in wb[ws_name].iter_rows(values_only=True):
+                r = (list(r) + [None, None])[:2]
+                _add_executive(data, r[0], r[1])
+            break
+    if not data["executives"]:
+        data["executives"] = _derive_executives(data)
+
     return data
+
+
+# --------------------------------------------------------------------------
+# Key Executives
+# --------------------------------------------------------------------------
+
+_EXEC_SECTION_NAMES = {"key executives", "executives", "key executive", "leadership",
+                       "key management", "management team", "leadership team"}
+
+_ROLE_WORDS = re.compile(
+    r"\b(chief|president|ceo|cfo|cto|coo|cio|cmo|chair(?:man|woman|person)?|officer|"
+    r"director|head|vice president|vp|evp|svp|managing|general manager|founder|partner)\b", re.I)
+_NAME = r"[A-Z][A-Za-z'’\-\.]+(?: [A-Z][A-Za-z'’\-\.]+){1,2}"
+_TITLE_TAIL = re.compile(
+    r",\s*(?:responsible|bringing|replacing|succeeding|effective|expanding|who|with|reporting|"
+    r"following|leading|to lead|where|after|in a|as part)\b.*$"
+    r"|\s+(?:at|effective|succeeding|replacing|reporting|following)\b.*$"
+    r"|\s+in\s+[A-Z][a-z]+\s+\d{4}.*$"
+    r"|\s+of\s+(?:[A-Z][\w&\.\-]*\s+)+(?:Ltd|Limited|Inc|Corp|Corporation|Co|Holdings|Plc|LLC)\.?.*$", re.I)
+_APPOINT_DESC = re.compile(
+    r"^(?P<name>" + _NAME + r")\b[^.]*?\b(?:joined|has been appointed|was appointed|appointed|"
+    r"has been promoted|was promoted|promoted|has been named|was named|named|"
+    r"was re-?designated|re-?designated)\b[^.]*?"
+    r"\b(?:as|to)\s+(?:the\s+)?(?:(?:newly created|expanded)\s+)?(?:role\s+of\s+)?(?P<title>[^.]+)")
+_APPOINT_HEAD = re.compile(
+    r"\b(?:appoints|names|promotes|hires|elevates|taps)\s+(?P<name>" + _NAME + r")\s+(?:as|to)\s+"
+    r"(?:the\s+)?(?P<title>.+)$", re.I)
+_APPOINT_TIMELINE = re.compile(
+    r"^(?:Named|Appointed|Promoted|Elevated|Hired|Elected)\s+(?P<name>" + _NAME + r")\s+as\s+"
+    r"(?:the\s+)?(?P<title>[^.]+)")
+_DEPARTURE = re.compile(r"\b(?:retire[sd]?|retiring|steps? down|stepping down|resign(?:s|ed)?|"
+                        r"departs?|departure|leaves|exits|steps? aside)\b", re.I)
+
+
+def _clean_title(title):
+    t = _TITLE_TAIL.sub("", (title or "").strip()).strip(" ,;.")
+    # "President of Vertiv's EMEA region" -> "President, EMEA"
+    t = re.sub(r"\s+of\s+(?:[A-Z][\w&\-]*['’]s\s+)?(.+?)\s+(?:region|division|business)$",
+               r", \1", t)
+    t = re.sub(r"\s+", " ", t)
+    return t[:1].upper() + t[1:] if t else t
+
+
+def _exec_rank(title):
+    """Lower = more senior; orders the cards CEO, Chair, President/COO, CFO, ..."""
+    t = title.lower()
+    if re.search(r"chief executive|\bceo\b", t):
+        return 0
+    if re.search(r"chair", t):
+        return 1
+    if re.search(r"^president\b(?!\s*,)|chief operating|\bcoo\b", t):
+        return 2
+    if re.search(r"chief financial|\bcfo\b", t):
+        return 3
+    if re.search(r"chief (?:technology|product|information|digital|data)|\bcto\b|\bcio\b", t):
+        return 4
+    if re.search(r"\bchief\b", t):
+        return 5
+    if re.search(r"vice president|\bevp\b|\bsvp\b|\bvp\b", t):
+        return 7
+    if re.search(r"president", t):
+        return 6
+    return 8
+
+
+def _add_executive(data, name, title):
+    """Add one explicit Key Executives row. A single cell 'Name - Title' or
+    'Name, Title' is split; header rows ('Name' / 'Title') are skipped."""
+    name = str(name).strip() if name not in (None, "") else ""
+    title = str(title).strip() if title not in (None, "") else ""
+    if not name or name.lower() in ("name", "executive", "executives") \
+            and title.lower() in ("", "title", "designation", "role"):
+        return
+    if not title:
+        m = re.split(r"\s+[–—-]\s+|,\s+", name, maxsplit=1)
+        if len(m) == 2:
+            name, title = m[0].strip(), m[1].strip()
+    data["executives"].append({"name": name, "title": title, "derived": False})
+
+
+def _derive_executives(data):
+    """Best-effort list of current leaders from the workbook's own text: the
+    'Executive & Leadership Shifts' rows of the Key Triggers sheet and
+    'Named X as Chief ...' lines of the Business Timeline. Appointments /
+    promotions give name + title; anyone whose own headline reports a
+    retirement / departure is dropped; one card per person and per title
+    (newest wins); ordered by seniority. Returns [] when nothing is found --
+    names are never guessed."""
+    cands = []                           # (date, name, title)
+    gone = set()
+    for ev in data.get("recent_developments") or []:
+        cat = str(ev.get("category") or "").lower()
+        if "executive" not in cat and "leadership" not in cat:
+            continue
+        head, desc = str(ev.get("headline") or ""), str(ev.get("description") or "")
+        if _DEPARTURE.search(head) and not re.search(r"\b(?:appoint|promot|names?|hires?)", head, re.I):
+            gone.update(m.group(0).lower() for m in re.finditer(_NAME, head))
+            gone.add(head.lower())
+            continue
+        m = _APPOINT_DESC.search(desc) or _APPOINT_HEAD.search(head)
+        if m:
+            cands.append((ev.get("sort_date") or datetime.min, m.group("name"), m.group("title")))
+    for year, text in (data.get("timeline") or {}).items():
+        m = _APPOINT_TIMELINE.search(str(text or "").strip())
+        if m:
+            cands.append((datetime(int(year), 12, 31), m.group("name"), m.group("title")))
+
+    cands.sort(key=lambda c: c[0], reverse=True)         # newest first
+    gone_text = " ".join(gone)
+    out, seen_names, seen_titles = [], set(), set()
+    for _, name, title in cands:
+        title = _clean_title(title)
+        if not title or not _ROLE_WORDS.search(title):
+            continue
+        if re.search(r"independent|board member|non-executive director", title, re.I) \
+                and not re.search(r"chair", title, re.I):
+            continue                      # board seats are not executives
+        key = name.lower()
+        # headline of a departure names this person (e.g. "... CFO David Fallon Retires")
+        if key in seen_names or title.lower() in seen_titles or key in gone_text:
+            continue
+        seen_names.add(key)
+        seen_titles.add(title.lower())
+        out.append({"name": name, "title": title, "derived": True})
+    out.sort(key=lambda e: _exec_rank(e["title"]))       # stable: newest first within a rank
+    return out
 
 
 _FACT_KEYS = {
@@ -712,7 +858,7 @@ def fill_slide2(slide, data, company):
     # varies, a few phrasings are accepted); anything not found stays empty --
     # never guessed.
     founded_match = re.search(r"(?:incorporated|founded|established) in (\d{4})", desc)
-    rev_match = re.search(r"consolidated income of approximately\s*([\u20b9$][^,\.]+(?:crore|million|billion)?)", desc)
+    rev_match = re.search(r"consolidated income of approximately\s*([\u20b9$][\d,]+(?:\.\d+)?\s*(?:crore|million|billion|lakh)?)", desc)
     emp_match = re.search(
         r"employs\s+(?:approximately|roughly|about|around|over|nearly|more than)?\s*"
         r"([\d,]+ to [\d,]+|\~?[\d,]+)\s*(?:people|employees)", desc)
@@ -780,10 +926,43 @@ def fill_slide2(slide, data, company):
     else:
         set_run_text(S[30], FLAG)
 
-    if remove:
-        # the workbook carries no executive names / titles, so the whole
-        # 'Key Executives' column (header + five cards) would be 'Name [xxxxx]'
+    _fill_executives(slide, S, data.get("executives") or [], remove)
+
+
+def _fill_executives(slide, S, execs, remove):
+    """Key Executives column of the Snapshot: five cards (parallelogram, photo,
+    name box, title box). Cards without an executive are deleted, and with no
+    executive at all the whole column goes (remove-empty on); with it off the
+    template's 'Name [xxxxx]' placeholders stay."""
+    if remove and not execs:
         _remove_band(slide, 8.7, 20, 1.6, 6.95)
+        return
+    cards = [(32, 33, 46, 47), (34, 50, 48, 49), (35, 51, 36, 37),
+             (38, 52, 39, 40), (41, 53, 42, 43)]
+    for k, (band, photo, name_box, title_box) in enumerate(cards):
+        ex = execs[k] if k < len(execs) else None
+        if ex is None:
+            if remove:
+                for i in (band, photo, name_box, title_box):
+                    _remove_shape(S[i])
+            continue
+        name, title = ex["name"], ex.get("title") or ""
+        set_run_text(S[name_box], name)
+        set_run_text(S[title_box], title)
+        # the template boxes are 2.4-3.1in wide; give both the room up to the
+        # slanted right edge of the card and shrink long text to fit
+        for box in (S[name_box], S[title_box]):
+            box.width = Inches(2.85)
+        _set_font_pt(S[name_box], 12 if len(name) <= 24 else 10.5)
+        if len(title) > 36:
+            for long, short in (("Executive Vice President", "EVP"), ("Senior Vice President", "SVP"),
+                                ("Vice President", "VP")):
+                title = title.replace(long, short)
+            set_run_text(S[title_box], title)
+        n = len(title)
+        _set_font_pt(S[title_box], 11 if n <= 30 else 10 if n <= 36 else 9)
+        if n > 46:
+            set_run_text(S[title_box], title[:45].rsplit(" ", 1)[0] + "\u2026")
 
 
 def _group_years_into_slots(years, n_slots):
@@ -1972,6 +2151,7 @@ def _generate_ppt(excel_path, pptx_path, company, output_path):
         "n_job_postings": len(data["jobs"]),
         "n_keydev": n_keydev,
         "n_events": len(data["recent_developments"]),
+        "n_executives": min(len(data["executives"]), 5),
         "unplaced_vendors": unplaced,
     }
 

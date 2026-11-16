@@ -76,10 +76,22 @@ python3 fill_deck.py --excel COMPANY.xlsm --pptx New_Sample_Business.pptx \
 - Long bullets shrink their font (down to 7.5pt) so text stays inside its panel.
 - **Overview sheet**: the key-fact rows at the top (Founded, Headquarters, Employees,
   Revenue, Website) fill the Business Snapshot slide. Rows the workbook doesn't have
-  (Ownership, Net Income, Market Cap, IT Budget / IT Team, key executives, unused
+  (Ownership, Net Income, Market Cap, IT Budget / IT Team, unused
   vendor categories ...) are **removed from the slide** instead of showing `xxxx` /
   `N/A`. Use `--keep-empty` on the command line (or `remove_empty=False` in
   `generate_ppt`) to keep the template boxes as they are.
+- **Key Executives** (Business Snapshot, up to 5 cards: name + title). Source, in order:
+  1. a `Key Executives` sheet, or a `Key Executives` block in the Overview sheet, with
+     one `Name | Title` row per person (a header row is fine) -- used exactly as typed;
+  2. otherwise the current leaders are **read from the workbook's own news**: the
+     `Executive & Leadership Shifts` rows of the Key Triggers sheet ("X joined as Chief
+     ... Officer", "X promoted to ...") and "Named X as Chief Executive Officer" lines
+     in the Business Timeline. Anyone whose own headline says retire / step down is
+     skipped, there is one card per person and per title (newest wins), board-only
+     seats (independent directors) are ignored, and cards run CEO -> Chair -> CFO ->
+     CTO ... in seniority order. These come from news text, so check them, or add a
+     `Key Executives` block to override.
+  Cards with no executive are removed; with none at all the whole column is removed.
 - **IT Landscape**: three panels -- Hiring (one line per posting from the `IT Job
   Hiring` sheet, e.g. "Technical Recruitment (USA)"), IT Platforms & Vendors (the `IT
   Vendor` sheet) and IT Focus Area (the Tech Themes headlines). The `Overview` band's
