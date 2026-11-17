@@ -719,7 +719,7 @@ TIMELINE_YEAR_PREFIX = False
 CHALLENGES_PER_SLIDE = 3
 CHALLENGE_HEADERS = ("Key Business Challenges", "Growth Prospects")
 
-# Boxes (key-fact rows, executive cards, vendor cards, empty theme columns,
+# Boxes (key-fact rows, vendor cards, empty theme columns,
 # unused job rows) that would only show "xxxx" are deleted from the output
 # instead of being left behind. generate_ppt(..., remove_empty=False) keeps
 # them. A ContextVar (not a global) so concurrent Streamlit sessions can't
@@ -903,6 +903,8 @@ def fill_slide2(slide, data, company):
                 _remove_shape(text)
                 continue
             set_para_full_text(text, 0, label, value or empty)
+            if text.width < Inches(2.95):
+                text.width = Inches(2.95)      # long values ("$1.43B (INR 11,948 Cr)") stay on one line
             dy = icon.top - text.top
             text.top = Emu(int(top0 + k * pitch + extra))
             icon.top = Emu(int(text.top + dy))
@@ -916,7 +918,7 @@ def fill_slide2(slide, data, company):
 
     competitor_names = [p["name"] for p in data["peers"] if p.get("name")]
     if competitor_names:
-        set_bullet_list(S[26], competitor_names)
+        set_bullet_list(S[26], competitor_names, bottom_in=6.95)
     else:
         set_run_text(S[26], FLAG)
 
@@ -930,21 +932,16 @@ def fill_slide2(slide, data, company):
 
 
 def _fill_executives(slide, S, execs, remove):
-    """Key Executives column of the Snapshot: five cards (parallelogram, photo,
-    name box, title box). Cards without an executive are deleted, and with no
-    executive at all the whole column goes (remove-empty on); with it off the
-    template's 'Name [xxxxx]' placeholders stay."""
-    if remove and not execs:
-        _remove_band(slide, 8.7, 20, 1.6, 6.95)
-        return
+    """Key Executives column of the Snapshot: always five cards (parallelogram,
+    photo, name box, title box). Each executive found fills a card from the
+    top; the remaining cards are left as the template's blank 'Name [xxxxx]' /
+    'Title [xxxx]' boxes to type into by hand -- they are never removed, even
+    with remove-empty on."""
     cards = [(32, 33, 46, 47), (34, 50, 48, 49), (35, 51, 36, 37),
              (38, 52, 39, 40), (41, 53, 42, 43)]
     for k, (band, photo, name_box, title_box) in enumerate(cards):
         ex = execs[k] if k < len(execs) else None
         if ex is None:
-            if remove:
-                for i in (band, photo, name_box, title_box):
-                    _remove_shape(S[i])
             continue
         name, title = ex["name"], ex.get("title") or ""
         set_run_text(S[name_box], name)
@@ -2059,7 +2056,7 @@ def generate_ppt(excel_path, pptx_path, company, output_path, remove_empty=True)
     dependency. Returns a dict of slide-count stats for logging/reporting.
 
     `remove_empty` (default True) deletes boxes that have no data -- key-fact
-    rows, executive cards, vendor cards, empty theme columns, unused job rows
+    rows, vendor cards, empty theme columns, unused job rows
     and slides with nothing to show -- instead of leaving "xxxx" / "N/A" in
     them; False keeps the template's boxes as they are.
     """
