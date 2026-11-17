@@ -71,6 +71,7 @@ if st.button("Generate Presentation", type="primary"):
                     st.write(
                         f"- IT Vendors — Software: {stats['n_software']} slide(s)\n"
                         f"- IT Vendors — ICT Services: {stats['n_ict']} slide(s)\n"
+                        f"- Key Executives: {stats['n_executives']} card(s)\n"
                         f"- Business Themes: {stats['n_business']} slide(s) "
                         f"for {stats['n_business_themes']} theme(s)\n"
                         f"- Challenges & Growth Prospects: {stats['n_challenges']} slide(s)\n"
